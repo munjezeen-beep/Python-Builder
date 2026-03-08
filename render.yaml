@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: telegram-radar
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run db:push && npm start
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: radar-db
+          property: connectionString
+      - key: NODE_ENV
+        value: production
+
+databases:
+  - name: radar-db
+    databaseName: radar
+    user: radar_user
