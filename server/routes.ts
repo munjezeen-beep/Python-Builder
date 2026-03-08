@@ -5,7 +5,6 @@ import { api } from "@shared/routes";
 import { z } from "zod";
 import { sendCode, verifyCode, setTelegramCredentials } from "./telegram";
 
-// مؤقت لتخزين phoneCodeHash لكل حساب
 const pendingCodes = new Map<number, { phoneCodeHash: string, phone: string }>();
 
 export async function registerRoutes(
@@ -13,7 +12,6 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
-  // Settings
   app.get(api.settings.get.path, async (req, res) => {
     try {
       const settings = await storage.getSettings();
@@ -36,7 +34,6 @@ export async function registerRoutes(
     }
   });
 
-  // Keywords
   app.get(api.keywords.list.path, async (req, res) => {
     const kws = await storage.getKeywords();
     res.json(kws);
@@ -65,7 +62,6 @@ export async function registerRoutes(
     }
   });
 
-  // Accounts
   app.get(api.accounts.list.path, async (req, res) => {
     const accs = await storage.getAccounts();
     res.json(accs);
@@ -74,15 +70,11 @@ export async function registerRoutes(
   app.post(api.accounts.create.path, async (req, res) => {
     try {
       const accountData = api.accounts.create.input.parse(req.body);
-      
-      // إعداد بيانات API للتليجرام
       setTelegramCredentials(accountData.apiId, accountData.apiHash);
-      
       const account = await storage.createAccount({
         ...accountData,
         status: "pending"
       });
-      
       res.status(201).json(account);
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -102,7 +94,6 @@ export async function registerRoutes(
     }
   });
 
-  // Telegram Real Auth Endpoints
   app.post(api.accounts.sendCode.path, async (req, res) => {
     try {
       const id = Number(req.params.id);
@@ -112,13 +103,10 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Account not found" });
       }
 
-      // إعداد بيانات API للتليجرام
       setTelegramCredentials(account.apiId, account.apiHash);
 
-      // إرسال الكود الحقيقي
       const { phoneCodeHash } = await sendCode(account.phone);
       
-      // تخزين الـ hash مؤقتاً
       pendingCodes.set(id, { phoneCodeHash, phone: account.phone });
       
       res.json({ success: true });
@@ -142,10 +130,8 @@ export async function registerRoutes(
         return res.status(400).json({ message: "No pending verification. Please request code first." });
       }
 
-      // إعداد بيانات API للتليجرام
       setTelegramCredentials(account.apiId, account.apiHash);
 
-      // التحقق من الكود الحقيقي مع تليجرام
       const sessionString = await verifyCode(
         pending.phone,
         pending.phoneCodeHash,
@@ -153,10 +139,8 @@ export async function registerRoutes(
         password
       );
 
-      // تحديث الحالة إلى active مع session string الحقيقي
       await storage.updateAccountStatus(id, "active", sessionString);
       
-      // مسح البيانات المؤقتة
       pendingCodes.delete(id);
       
       res.json({ success: true, status: "active" });
@@ -165,7 +149,6 @@ export async function registerRoutes(
         return res.status(400).json({ message: error.errors[0].message });
       }
       
-      // إذا كان الخطأ يعني أن الكود غير صحيح
       if (error.message === "2FA password required") {
         return res.status(400).json({ message: "Password required", requiresPassword: true });
       }
@@ -174,7 +157,6 @@ export async function registerRoutes(
     }
   });
 
-  // Logs
   app.get(api.logs.list.path, async (req, res) => {
     const allLogs = await storage.getLogs();
     res.json(allLogs);
