@@ -94,68 +94,85 @@ export async function registerRoutes(
     }
   });
 
-  app.post(api.accounts.sendCode.path, async (req, res) => {
-    try {
-      const id = Number(req.params.id);
-      const account = await storage.getAccount(id);
-      
-      if (!account) {
-        return res.status(400).json({ message: "Account not found" });
-      }
-
-      setTelegramCredentials(account.apiId, account.apiHash);
-
-      const { phoneCodeHash } = await sendCode(account.phone);
-      
-      pendingCodes.set(id, { phoneCodeHash, phone: account.phone });
-      
-      res.json({ success: true });
-    } catch (error: any) {
-      res.status(500).json({ message: error.message || "Failed to send code" });
+  // Telegram Real Auth Endpoints - Railway Optimized
+app.post(api.accounts.sendCode.path, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const account = await storage.getAccount(id);
+    
+    if (!account) {
+      return res.status(404).json({ message: "Account not found" });
     }
-  });
 
-  app.post(api.accounts.verifyCode.path, async (req, res) => {
-    try {
-      const id = Number(req.params.id);
-      const { code, password } = api.accounts.verifyCode.input.parse(req.body);
-      
-      const account = await storage.getAccount(id);
-      if (!account) {
-        return res.status(400).json({ message: "Account not found" });
-      }
+    // إعداد بيانات API للتليجرام
+    setTelegramCredentials(account.apiId, account.apiHash);
 
-      const pending = pendingCodes.get(id);
-      if (!pending) {
-        return res.status(400).json({ message: "No pending verification. Please request code first." });
-      }
+    // إرسال الكود
+    await sendCode(account.phone, id);
+    
+    res.json({ success: true });
+    
+  } catch (error: any) {
+    console.error("Send code error:", error);
+    res.status(500).json({ 
+      message: error.message || "Failed to send code. Please check your API credentials and try again." 
+    });
+  }
+});
 
-      setTelegramCredentials(account.apiId, account.apiHash);
-
-      const sessionString = await verifyCode(
-        pending.phone,
-        pending.phoneCodeHash,
-        code,
-        password
-      );
-
-      await storage.updateAccountStatus(id, "active", sessionString);
-      
-      pendingCodes.delete(id);
-      
-      res.json({ success: true, status: "active" });
-    } catch (error: any) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: error.errors[0].message });
-      }
-      
-      if (error.message === "2FA password required") {
-        return res.status(400).json({ message: "Password required", requiresPassword: true });
-      }
-      
-      res.status(500).json({ message: error.message || "Failed to verify code" });
+app.post(api.accounts.verifyCode.path, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { code, password } = api.accounts.verifyCode.input.parse(req.body);
+    
+    const account = await storage.getAccount(id);
+    if (!account) {
+      return res.status(404).json({ message: "Account not found" });
     }
-  });
+
+    // إعداد بيانات API للتليجرام
+    setTelegramCredentials(account.apiId, account.apiHash);
+
+    // التحقق من الكود
+    const sessionString = await verifyCode(id, code, password);
+
+    // تحديث الحالة إلى active مع session string الحقيقي
+    await storage.updateAccountStatus(id, "active", sessionString);
+    
+    res.json({ success: true, status: "active" });
+    
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ message: error.errors[0].message });
+    }
+    
+    console.error("Verify code error:", error);
+    
+    // رسائل خطأ مخصصة
+    if (error.message === "2FA_PASSWORD_REQUIRED") {
+      return res.status(400).json({ 
+        message: "This account requires a 2FA password. Please enter it.",
+        requiresPassword: true 
+      });
+    }
+    
+    if (error.message === "INVALID_CODE") {
+      return res.status(400).json({ 
+        message: "The code you entered is incorrect. Please check and try again." 
+      });
+    }
+    
+    if (error.message === "CODE_EXPIRED") {
+      return res.status(400).json({ 
+        message: "The code has expired. Please request a new code." 
+      });
+    }
+    
+    res.status(500).json({ 
+      message: error.message || "Verification failed. Please try again." 
+    });
+  }
+});
 
   app.get(api.logs.list.path, async (req, res) => {
     const allLogs = await storage.getLogs();
