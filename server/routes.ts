@@ -1,8 +1,12 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
-import { api, errorSchemas } from "@shared/routes";
+import { api } from "@shared/routes";
 import { z } from "zod";
+import { sendCode, verifyCode, setTelegramCredentials } from "./telegram";
+
+// مؤقت لتخزين phoneCodeHash لكل حساب
+const pendingCodes = new Map<number, { phoneCodeHash: string, phone: string }>();
 
 export async function registerRoutes(
   httpServer: Server,
@@ -70,7 +74,15 @@ export async function registerRoutes(
   app.post(api.accounts.create.path, async (req, res) => {
     try {
       const accountData = api.accounts.create.input.parse(req.body);
-      const account = await storage.createAccount(accountData);
+      
+      // إعداد بيانات API للتليجرام
+      setTelegramCredentials(accountData.apiId, accountData.apiHash);
+      
+      const account = await storage.createAccount({
+        ...accountData,
+        status: "pending"
+      });
+      
       res.status(201).json(account);
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -90,37 +102,75 @@ export async function registerRoutes(
     }
   });
 
-  // Telegram Mock Auth Endpoints
+  // Telegram Real Auth Endpoints
   app.post(api.accounts.sendCode.path, async (req, res) => {
-    const id = Number(req.params.id);
-    const account = await storage.getAccount(id);
-    if (!account) {
-      return res.status(400).json({ message: "Account not found" });
-    }
-    // Mock sending code logic
-    res.json({ success: true });
-  });
-
-  app.post(api.accounts.verifyCode.path, async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const { code, password } = api.accounts.verifyCode.input.parse(req.body);
       const account = await storage.getAccount(id);
       
       if (!account) {
         return res.status(400).json({ message: "Account not found" });
       }
 
-      // Mock verify code and generating session string
-      const fakeSessionString = "session_mock_" + Math.random().toString(36).substring(7);
-      await storage.updateAccountStatus(id, "active", fakeSessionString);
+      // إعداد بيانات API للتليجرام
+      setTelegramCredentials(account.apiId, account.apiHash);
+
+      // إرسال الكود الحقيقي
+      const { phoneCodeHash } = await sendCode(account.phone);
+      
+      // تخزين الـ hash مؤقتاً
+      pendingCodes.set(id, { phoneCodeHash, phone: account.phone });
+      
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message || "Failed to send code" });
+    }
+  });
+
+  app.post(api.accounts.verifyCode.path, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const { code, password } = api.accounts.verifyCode.input.parse(req.body);
+      
+      const account = await storage.getAccount(id);
+      if (!account) {
+        return res.status(400).json({ message: "Account not found" });
+      }
+
+      const pending = pendingCodes.get(id);
+      if (!pending) {
+        return res.status(400).json({ message: "No pending verification. Please request code first." });
+      }
+
+      // إعداد بيانات API للتليجرام
+      setTelegramCredentials(account.apiId, account.apiHash);
+
+      // التحقق من الكود الحقيقي مع تليجرام
+      const sessionString = await verifyCode(
+        pending.phone,
+        pending.phoneCodeHash,
+        code,
+        password
+      );
+
+      // تحديث الحالة إلى active مع session string الحقيقي
+      await storage.updateAccountStatus(id, "active", sessionString);
+      
+      // مسح البيانات المؤقتة
+      pendingCodes.delete(id);
       
       res.json({ success: true, status: "active" });
-    } catch (err) {
-       if (err instanceof z.ZodError) {
-        return res.status(400).json({ message: err.errors[0].message });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: error.errors[0].message });
       }
-      res.status(500).json({ message: "Failed to verify code" });
+      
+      // إذا كان الخطأ يعني أن الكود غير صحيح
+      if (error.message === "2FA password required") {
+        return res.status(400).json({ message: "Password required", requiresPassword: true });
+      }
+      
+      res.status(500).json({ message: error.message || "Failed to verify code" });
     }
   });
 
