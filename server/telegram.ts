@@ -58,7 +58,7 @@ export async function verifyCode(
     await client.invoke(
       new Api.auth.SignIn({
         phoneNumber: phone,
-        phoneCodeHash,
+        phoneCodeHash: phoneCodeHash,
         phoneCode: code,
       })
     );
@@ -67,19 +67,25 @@ export async function verifyCode(
       if (!password) {
         throw new Error("2FA password required");
       }
+      const passwordInfo = await client.invoke(new Api.account.GetPassword());
+      const hashedPassword = await passwordInfo.computeCheck(password);
       await client.invoke(
         new Api.auth.CheckPassword({
-          password: await client.invoke(
-            new Api.account.GetPassword()
-          ).then((p) => {
-            const algo = (p as any).currentAlgo;
-            return (p as any).computeCheck(password, algo);
-          }),
+          password: hashedPassword,
         })
       );
+    } else if (error.errorMessage === "PHONE_CODE_INVALID") {
+      throw new Error("The code you entered is incorrect");
+    } else if (error.errorMessage === "PHONE_CODE_EXPIRED") {
+      throw new Error("The code has expired. Please request a new one.");
     } else {
-      throw error;
+      throw new Error(`Telegram error: ${error.errorMessage || "Unknown error"}`);
     }
+  }
+
+  const isAuthorized = await client.isUserAuthorized();
+  if (!isAuthorized) {
+    throw new Error("Authorization failed");
   }
 
   const sessionString = client.session.save() as unknown as string;
